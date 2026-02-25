@@ -3,7 +3,7 @@
 //! 支持从 Kiro IDE 的凭证文件加载，使用 Social 认证方式
 //! 支持单凭据和多凭据配置格式
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
 use std::path::Path;
 
@@ -15,7 +15,8 @@ use crate::model::config::Config;
 #[serde(rename_all = "camelCase")]
 pub struct KiroCredentials {
     /// 凭据唯一标识符（自增 ID）
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// 支持反序列化 u64（原格式）和 String/UUID（账号管理工具导出格式，会被设为 None）
+    #[serde(default, deserialize_with = "deserialize_id_flexible", skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
 
     /// 访问令牌
@@ -73,6 +74,22 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
 
+    /// 认证提供者（BuilderId 等，来自账号管理工具导出）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+
+    /// 凭据标签/备注（来自账号管理工具导出）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+
+    /// 凭据状态（active 等，来自账号管理工具导出）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+
+    /// 用户 ID（来自账号管理工具导出）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+
     /// 订阅等级（KIRO PRO+ / KIRO FREE 等）
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
@@ -101,6 +118,57 @@ pub struct KiroCredentials {
 /// 判断是否为零（用于跳过序列化）
 fn is_zero(value: &u32) -> bool {
     *value == 0
+}
+
+/// 灵活反序列化 id 字段：支持 u64（原格式）和 String/UUID（账号管理工具导出格式）
+/// - u64 → Some(u64)
+/// - String（UUID 等）→ None（让系统自动分配数字 ID）
+/// - null / 缺失 → None
+fn deserialize_id_flexible<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de;
+
+    struct IdVisitor;
+
+    impl<'de> de::Visitor<'de> for IdVisitor {
+        type Value = Option<u64>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a u64, a string, or null")
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            if v >= 0 {
+                Ok(Some(v as u64))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            // 尝试解析为 u64（纯数字字符串），否则视为 UUID 等非数字 ID，返回 None
+            match v.parse::<u64>() {
+                Ok(n) => Ok(Some(n)),
+                Err(_) => Ok(None),
+            }
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(IdVisitor)
 }
 
 fn canonicalize_auth_method_value(value: &str) -> &str {
@@ -334,6 +402,10 @@ mod tests {
             api_region: None,
             machine_id: None,
             email: None,
+            provider: None,
+            label: None,
+            status: None,
+            user_id: None,
             subscription_title: None,
             proxy_url: None,
             proxy_username: None,
@@ -452,6 +524,10 @@ mod tests {
             api_region: None,
             machine_id: None,
             email: None,
+            provider: None,
+            label: None,
+            status: None,
+            user_id: None,
             subscription_title: None,
             proxy_url: None,
             proxy_username: None,
@@ -482,6 +558,10 @@ mod tests {
             api_region: None,
             machine_id: None,
             email: None,
+            provider: None,
+            label: None,
+            status: None,
+            user_id: None,
             subscription_title: None,
             proxy_url: None,
             proxy_username: None,
@@ -594,6 +674,10 @@ mod tests {
             api_region: None,
             machine_id: Some("c".repeat(64)),
             email: None,
+            provider: None,
+            label: None,
+            status: None,
+            user_id: None,
             subscription_title: None,
             proxy_url: None,
             proxy_username: None,
@@ -862,5 +946,95 @@ mod tests {
         let creds = KiroCredentials::default();
         let result = creds.effective_proxy(None);
         assert_eq!(result, None);
+    }
+
+    // ============ 灵活 ID 反序列化测试 ============
+
+    #[test]
+    fn test_id_flexible_deserialize_u64() {
+        // 测试 u64 类型的 id（原格式）
+        let json = r#"{"refreshToken": "test", "id": 42}"#;
+        let creds = KiroCredentials::from_json(json).unwrap();
+        assert_eq!(creds.id, Some(42));
+    }
+
+    #[test]
+    fn test_id_flexible_deserialize_uuid_string() {
+        // 测试 UUID 字符串类型的 id（账号管理工具导出格式）→ 应该被设为 None
+        let json = r#"{"refreshToken": "test", "id": "373c61d5-7ee5-4625-bd87-ca0c515d1de3"}"#;
+        let creds = KiroCredentials::from_json(json).unwrap();
+        assert_eq!(creds.id, None);
+    }
+
+    #[test]
+    fn test_id_flexible_deserialize_numeric_string() {
+        // 测试纯数字字符串的 id → 应该被解析为 u64
+        let json = r#"{"refreshToken": "test", "id": "123"}"#;
+        let creds = KiroCredentials::from_json(json).unwrap();
+        assert_eq!(creds.id, Some(123));
+    }
+
+    #[test]
+    fn test_id_flexible_deserialize_null() {
+        // 测试 null 值的 id
+        let json = r#"{"refreshToken": "test", "id": null}"#;
+        let creds = KiroCredentials::from_json(json).unwrap();
+        assert_eq!(creds.id, None);
+    }
+
+    #[test]
+    fn test_id_flexible_deserialize_missing() {
+        // 测试缺失 id 字段
+        let json = r#"{"refreshToken": "test"}"#;
+        let creds = KiroCredentials::from_json(json).unwrap();
+        assert_eq!(creds.id, None);
+    }
+
+    #[test]
+    fn test_new_fields_from_account_manager_export() {
+        // 测试账号管理工具导出格式的新字段
+        let json = r#"{
+            "id": "373c61d5-7ee5-4625-bd87-ca0c515d1de3",
+            "refreshToken": "aorAAAAA...",
+            "clientId": "oB03oJZH...",
+            "clientSecret": "eyJraWQi...",
+            "region": "us-east-1",
+            "provider": "BuilderId",
+            "label": "Kiro BuilderId 账号",
+            "status": "active",
+            "userId": "d-9067642ac7...",
+            "machineId": "5e887f7c-...",
+            "email": "user@example.com"
+        }"#;
+        let creds = KiroCredentials::from_json(json).unwrap();
+        
+        // UUID id 应该被设为 None
+        assert_eq!(creds.id, None);
+        // 新字段应该被正确解析
+        assert_eq!(creds.provider, Some("BuilderId".to_string()));
+        assert_eq!(creds.label, Some("Kiro BuilderId 账号".to_string()));
+        assert_eq!(creds.status, Some("active".to_string()));
+        assert_eq!(creds.user_id, Some("d-9067642ac7...".to_string()));
+        // 原有字段也应该正确解析
+        assert_eq!(creds.refresh_token, Some("aorAAAAA...".to_string()));
+        assert_eq!(creds.region, Some("us-east-1".to_string()));
+        assert_eq!(creds.email, Some("user@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_unknown_fields_ignored() {
+        // 测试未知字段被忽略（serde 默认行为）
+        let json = r#"{
+            "refreshToken": "test",
+            "password": "should_be_ignored",
+            "addedAt": "2026/02/25 10:42:43",
+            "clientIdHash": "e909a058...",
+            "usageData": {"key": "value"},
+            "groupId": null,
+            "tagLinks": []
+        }"#;
+        let creds = KiroCredentials::from_json(json).unwrap();
+        assert_eq!(creds.refresh_token, Some("test".to_string()));
+        // 未知字段不会导致解析失败
     }
 }

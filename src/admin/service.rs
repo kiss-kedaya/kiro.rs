@@ -203,6 +203,10 @@ impl AdminService {
             api_region: req.api_region,
             machine_id: req.machine_id,
             email: req.email,
+            provider: None,
+            label: None,
+            status: None,
+            user_id: None,
             subscription_title: None, // 将在首次获取使用额度时自动更新
             proxy_url: req.proxy_url,
             proxy_username: req.proxy_username,
