@@ -27,6 +27,7 @@ interface CredentialInput {
   apiRegion?: string
   priority?: number
   machineId?: string
+  provider?: string
 }
 
 interface VerificationResult {

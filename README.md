@@ -291,6 +291,29 @@ docker-compose up
 ]
 ```
 
+#### BuilderId 格式（账号管理工具导出格式）
+
+支持直接导入从账号管理工具导出的 BuilderId 格式凭据（参考 `credentials.example.builderid.json`）：
+
+```json
+[
+   {
+      "refreshToken": "你的刷新token",
+      "clientId": "你的clientId",
+      "clientSecret": "你的clientSecret",
+      "region": "us-east-1",
+      "provider": "BuilderId",
+      "machineId": ""
+   }
+]
+```
+
+说明：
+- `provider` 字段会被保留但不影响功能
+- `region` 字段会自动映射为 `authRegion`
+- 系统会自动识别为 `idc` 认证方式（因为同时提供了 `clientId` 和 `clientSecret`）
+- 可通过 Admin UI 的批量导入功能直接导入此格式
+
 多凭据特性：
 - 按 `priority` 字段排序，数字越小优先级越高（默认为 0）
 - 单凭据最多重试 3 次，单请求最多重试 9 次
